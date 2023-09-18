@@ -125,7 +125,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         PaymentStatus phaseStatus,
         bool isMultiphase
     );
-    event Paid(uint256 indexed paymentId, PaymentStatus paymentStatus);
+    event Deposited(uint256 indexed paymentId, PaymentStatus paymentStatus);
     event ClientConfirmPhases(uint256 indexed paymentId, uint256[] phaseIds);
     event ConfirmedToRelease(uint256 indexed paymentId, uint256[] phaseIds);
     event Claimed(
@@ -144,22 +144,6 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         address paymentToken,
         PaymentStatus paymentStatus
     );
-    event ClientWithdrawn(
-        address client,
-        uint256 indexed paymentId,
-        uint256[] indexed phaseIds,
-        uint256 amount,
-        address paymentToken,
-        PaymentStatus paymentStatus
-    );
-    event OwnerWithdrawn(
-        address owner,
-        uint256 indexed paymentId,
-        uint256[] indexed phaseIds,
-        uint256 amount,
-        address paymentToken,
-        PaymentStatus paymentStatus
-    );
     event Judged(
         uint256 indexed paymentId,
         uint256[] indexed phaseIds,
@@ -168,16 +152,12 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     );
     event Toggled(bool isPaused);
 
-    event SetGasLimitUnit(uint256 indexed oldGasLimitUnit, uint256 indexed newGasTransferLimit);
-    event SetAmount(uint256 oldAmount, uint256 newAmount);
     event SetServiceFeePercent(
         uint256 oldClientFeePercent,
         uint256 oldFreelancerFeePercent,
         uint256 newClientFeePercent,
         uint256 newFreelancerFeePercent
     );
-    event SetWithdrawnDuration(uint256 oldDuration, uint256 newDuration);
-    event SetDelayDuration(uint256 oldDuration, uint256 newDuration);
     event SetPermittedToken(address indexed token, bool indexed allowed);
     event SetFeePercentToAddress(address indexed addr, uint256 feePercent);
 
@@ -417,44 +397,44 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         emit Canceled(payment.client, _paymentId, payment.totalAmount, payment.paymentToken, payment.status);
     }
 
-    // /**
-    //  *  @dev    Client pay for the payment
-    //  *
-    //  *  @notice Only Client can call this function.
-    //  *
-    //  *          Name        Meaning
-    //  *  @param  _paymentId  ID of payment that needs to be updated
-    //  *  @param  _amount     Amount that needs to be paid
-    //  *
-    //  *  Emit event {Paid}
-    //  */
-    // function pay(
-    //     uint256 _paymentId,
-    //     uint256 _amount
-    // )
-    //     external
-    //     payable
-    //     whenNotPaused
-    //     onlyValidPayment(_paymentId)
-    //     onlyNonExpiredPayment(_paymentId)
-    //     onlyRequestingPayment(_paymentId)
-    //     onlyClient(_paymentId)
-    //     nonReentrant
-    // {
-    //     Payment storage payment = payments[_paymentId];
-    //     require(_amount == payment.amount * payment.numberOfInstallment, "Must pay enough total amount");
+    /**
+     *  @dev    Client pay for the payment
+     *
+     *  @notice Only Client can call this function.
+     *
+     *          Name        Meaning
+     *  @param  _paymentId  ID of payment that needs to be updated
+     *  @param  _amount     Amount that needs to be paid
+     *
+     *  Emit event {Deposited}
+     */
+    function deposit(
+        uint256 _paymentId,
+        uint256 _amount
+    )
+        external
+        payable
+        whenNotPaused
+        onlyValidPayment(_paymentId)
+        onlyNonExpiredPayment(_paymentId)
+        onlyRequestingPayment(_paymentId)
+        onlyClient(_paymentId)
+        nonReentrant
+    {
+        Payment storage payment = payments[_paymentId];
+        require(_amount == payment.totalAmount, "Must pay enough total amount");
 
-    //     payment.status = PaymentStatus.PAID;
+        payment.status = PaymentStatus.PAID;
 
-    //     if (permittedPaymentTokens[payment.paymentToken]) {
-    //         require(msg.value == 0, "Can only pay by token");
-    //         IERC20Upgradeable(payment.paymentToken).safeTransferFrom(_msgSender(), address(this), _amount);
-    //     } else {
-    //         require(msg.value == _amount, "Invalid amount");
-    //     }
+        if (permittedPaymentTokens[payment.paymentToken]) {
+            require(msg.value == 0, "Can only pay by token");
+            IERC20Upgradeable(payment.paymentToken).safeTransferFrom(_msgSender(), address(this), _amount);
+        } else {
+            require(msg.value == _amount, "Invalid amount");
+        }
 
-    //     emit Paid(_paymentId, payment.status);
-    // }
+        emit Deposited(_paymentId, payment.status);
+    }
 
     /**
      *  @dev    Client confirm that provides service to Client
@@ -472,7 +452,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     ) external whenNotPaused onlyValidPayment(_paymentId) onlyNonExpiredPayment(_paymentId) onlyClient(_paymentId) {
         Payment storage payment = payments[_paymentId];
         require(payment.status == PaymentStatus.PROCESSING, "Payment isn't processing");
-        require(_phaseIds.length > 0 && _phaseIds.length <= payment.pendingPhaseIds.length, "Invalid phaseIds");
+        require(_phaseIds.length > 0, "Invalid phaseIds");
 
         for (uint256 i = 0; i < _phaseIds.length; i++) {
             require(_phaseIds[i] <= payment.lastPhaseId, "Invalid phaseId");
@@ -482,15 +462,16 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
                 "This phase has not been confirmed by freelancer"
             );
             phase.status = PhaseStatus.CLIENT_CONFIRMED;
+            payment.pendingPhaseIds.push(_phaseIds[i]);
         }
 
         emit ClientConfirmPhases(_paymentId, _phaseIds);
     }
 
     /**
-     *  @dev    Client confirm to release money to phase
+     *  @dev    Freelancer confirm to release phase
      *
-     *  @notice Only Client can call this function.
+     *  @notice Only Freelancer can call this function.
      *
      *          Name          Meaning
      *  @param  _paymentId    ID of payment that needs to be confirmed
@@ -503,7 +484,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     ) external whenNotPaused onlyValidPayment(_paymentId) onlyNonExpiredPayment(_paymentId) onlyFreelancer(_paymentId) {
         Payment storage payment = payments[_paymentId];
         require(payment.status == PaymentStatus.PROCESSING, "Payment isn't processing");
-        require(_phaseIds.length > 0 && _phaseIds.length <= payment.pendingPhaseIds.length, "Invalid phaseIds");
+        require(_phaseIds.length > 0, "Invalid phaseIds");
 
         for (uint256 i = 0; i < _phaseIds.length; i++) {
             require(_phaseIds[i] <= payment.lastPhaseId, "Invalid phaseId");
@@ -531,6 +512,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         Payment storage payment = payments[_paymentId];
         require(block.timestamp <= payment.expiredDate, "Claim time has expired");
         require(payment.status == PaymentStatus.PROCESSING, "Payment hasn't been processing yet");
+        require(payment.pendingPhaseIds.length > 0, "Nothing to claim");
 
         uint256 claimableTotalAmount = 0;
         // Set CLAIMED status for claimed phase
@@ -539,8 +521,6 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
             phases[_paymentId][phaseId].status = PhaseStatus.CLAIMED;
             claimableTotalAmount += phases[_paymentId][phaseId].amount;
         }
-
-        require(claimableTotalAmount > 0, "Nothing to claim");
 
         payment.finishedPhasesCount += payment.pendingPhaseIds.length;
         if (payment.finishedPhasesCount == payment.lastPhaseId) {
@@ -568,148 +548,45 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         );
     }
 
-    // /**
-    //  *  @dev    Client withdraws unused money in the expired payment
-    //  *
-    //  *  @notice Only Client can call this function
-    //  *
-    //  *          Name                Meaning
-    //  *  @param  _paymentId          ID of payment that client want to withdraw money
-    //  *
-    //  *  Emit event {ClientWithdrawn}
-    //  */
-    // function clientWithdrawPayment(
-    //     uint256 _paymentId
-    // ) external whenNotPaused onlyValidPayment(_paymentId) onlyClient(_paymentId) nonReentrant {
-    //     Payment storage payment = payments[_paymentId];
+    /**
+     *  @dev    Return money for Client if Business Owner not provide services on time in a phase
+     *
+     *  @notice Only Owner (KickstarService) can call this function
+     *
+     *          Name                Meaning
+     *  @param  _paymentId          ID of payment that Owner (KickstarService) want to handle
+     *  @param  _phaseIds       ID of phases that want to judge
+     *  @param  _isCancel           true -> Client win -> cancel this phase; false -> BO win -> force client to confirm this phase
+     *
+     *  Emit event {Judged}
+     */
+    function judge(
+        uint256 _paymentId,
+        uint256[] memory _phaseIds,
+        bool _isCancel
+    ) external whenNotPaused onlyValidPayment(_paymentId) onlyOwner nonReentrant {
+        require(_phaseIds.length > 0, "Invalid phase ids");
 
-    //     require(
-    //         payment.status == PaymentStatus.PAID || payment.status == PaymentStatus.PROCESSING,
-    //         "Payment hasn't been paid yet or was finished"
-    //     );
+        Payment storage payment = payments[_paymentId];
+        require(payment.status == PaymentStatus.PROCESSING, "Payment hasn't been processing yet");
 
-    //     uint256 currentTime = block.timestamp;
-    //     uint256 boClaimEndTime = payment.expiredDate + BO_EXTEND_WITHDRAW_DURATION;
-    //     require(
-    //         currentTime > boClaimEndTime && currentTime <= boClaimEndTime + clientExtendWithdrawDuration,
-    //         "Not in withdraw time"
-    //     );
+        for (uint256 i = 0; i < _phaseIds.length; i++) {
+            uint256 phaseId = _phaseIds[i];
+            Phase storage phase = phases[_paymentId][phaseId];
+            require(phase.status == PhaseStatus.FREELANCER_CONFIRMED, "Phase hasn't confirm yet");
 
-    //     // Set CANCELED status for processing phase
-    //     uint256[] memory canceledPhaseIds = new uint256[](
-    //         payment.lastPhaseId - payment.finishedPhasesCount
-    //     );
-    //     for (uint256 i = payment.finishedPhasesCount + 1; i <= payment.lastPhaseId; i++) {
-    //         phases[_paymentId][i].status = PhaseStatus.CANCELED;
-    //         canceledPhaseIds[i - payment.finishedPhasesCount - 1] = i;
-    //     }
+            if (_isCancel) {
+                payment.finishedPhasesCount++;
+                phase.status = PhaseStatus.CANCELED;
+                _withdraw(payment.client, payment.paymentToken, phase.amount);
+            } else {
+                phase.status = PhaseStatus.CLIENT_CONFIRMED;
+                payment.pendingPhaseIds.push(phaseId);
+            }
+        }
 
-    //     uint256 claimable = payment.amount * (payment.numberOfInstallment - payment.finishedPhasesCount);
-    //     payment.status = PaymentStatus.FINISHED;
-    //     payment.finishedPhasesCount = payment.lastPhaseId;
-    //     payment.pendingPhaseIds = new uint256[](0);
-
-    //     _withdraw(_msgSender(), payment.paymentToken, claimable);
-
-    //     emit ClientWithdrawn(
-    //         _msgSender(),
-    //         _paymentId,
-    //         canceledPhaseIds,
-    //         payment.amount,
-    //         payment.paymentToken,
-    //         payment.status
-    //     );
-    // }
-
-    // /**
-    //  *  @dev    KickstarService withdraws money in expired payment after the 90 days from the payment's expired date
-    //  *
-    //  *  @notice Only Owner (KickstarService) can call this function
-    //  *
-    //  *          Name                Meaning
-    //  *  @param  _paymentId          ID of payment that client want to withdraw money
-    //  *
-    //  *  Emit event {OwnerWithdrawn}
-    //  */
-    // function ownerWithdrawPayment(
-    //     uint256 _paymentId
-    // ) external whenNotPaused onlyValidPayment(_paymentId) onlyOwner nonReentrant {
-    //     Payment storage payment = payments[_paymentId];
-
-    //     require(
-    //         payment.status == PaymentStatus.PAID || payment.status == PaymentStatus.PROCESSING,
-    //         "Payment hasn't been paid yet or was finished"
-    //     );
-    //     require(
-    //         block.timestamp > payment.expiredDate + BO_EXTEND_WITHDRAW_DURATION + clientExtendWithdrawDuration,
-    //         "Not in withdraw time"
-    //     );
-
-    //     // Set CANCELED status for processing phase
-    //     uint256[] memory canceledPhaseIds = new uint256[](
-    //         payment.lastPhaseId - payment.finishedPhasesCount
-    //     );
-    //     for (uint256 i = payment.finishedPhasesCount + 1; i <= payment.lastPhaseId; i++) {
-    //         phases[_paymentId][i].status = PhaseStatus.CANCELED;
-    //         canceledPhaseIds[i - payment.finishedPhasesCount - 1] = i;
-    //     }
-
-    //     uint256 claimable = payment.amount * (payment.numberOfInstallment - payment.finishedPhasesCount);
-    //     payment.status = PaymentStatus.FINISHED;
-    //     payment.finishedPhasesCount = payment.lastPhaseId;
-    //     payment.pendingPhaseIds = new uint256[](0);
-
-    //     _withdraw(_msgSender(), payment.paymentToken, claimable);
-
-    //     emit OwnerWithdrawn(
-    //         _msgSender(),
-    //         _paymentId,
-    //         canceledPhaseIds,
-    //         payment.amount,
-    //         payment.paymentToken,
-    //         payment.status
-    //     );
-    // }
-
-    // /**
-    //  *  @dev    Return money for Client if Business Owner not provide services on time in a phase
-    //  *
-    //  *  @notice Only Owner (KickstarService) can call this function
-    //  *
-    //  *          Name                Meaning
-    //  *  @param  _paymentId          ID of payment that Owner (KickstarService) want to handle
-    //  *  @param  _phaseIds       ID of phases that want to judge
-    //  *  @param  _isCancel           true -> Client win -> cancel this phase; false -> BO win -> force client to confirm this phase
-    //  *
-    //  *  Emit event {Judged}
-    //  */
-    // function judge(
-    //     uint256 _paymentId,
-    //     uint256[] memory _phaseIds,
-    //     bool _isCancel
-    // ) external whenNotPaused onlyValidPayment(_paymentId) onlyOwner nonReentrant {
-    //     require(_phaseIds.length > 0, "Invalid phase ids");
-
-    //     Payment storage payment = payments[_paymentId];
-    //     require(payment.status == PaymentStatus.PROCESSING, "Payment hasn't been processing yet");
-
-    //     for (uint256 i = 0; i < _phaseIds.length; i++) {
-    //         uint256 phaseId = _phaseIds[i];
-    //         Phase storage phase = phases[_paymentId][phaseId];
-    //         require(phase.status == PhaseStatus.FREELANCER_CONFIRMED, "Phase hasn't confirm yet");
-
-    //         if (_isCancel) {
-    //             payment.finishedPhasesCount++;
-    //             phase.status = PhaseStatus.CANCELED;
-    //             _withdraw(payment.client, payment.paymentToken, payment.amount);
-    //         } else {
-    //             phase.status = PhaseStatus.CLIENT_CONFIRMED;
-    //             payment.pendingPhaseIds.push(phaseId);
-    //         }
-    //     }
-
-    //     emit Judged(_paymentId, _phaseIds, _isCancel, payment.status);
-    // }
+        emit Judged(_paymentId, _phaseIds, _isCancel, payment.status);
+    }
 
     /**
      *  @dev    Calculate service fee by amount payment
