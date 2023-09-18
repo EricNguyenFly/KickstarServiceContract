@@ -13,65 +13,65 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
 
     //  prettier-ignore
     /*
-     *  @dev Payment struct
+     *  @dev Project struct
      */
-    struct Payment {
-        address       freelancer;               // Freelancer of payment
-        address       client;                   // Client of payment
-        address       paymentToken;             // Payment token using in Payment
-        PaymentStatus status;                   // Payment's status
-        uint256       totalAmount;              // Amount of each phase
-        uint256       finishedPhasesCount;  // Number of phases
-        uint256       lastPhaseId;          // Last phase id
-        uint256       createdDate;              // Payment's created day
-        uint256       expiredDate;              // Payment's expired day
-        uint256[]     pendingPhaseIds;      // List of phase ids of this phase
+    struct Project {
+        address       freelancer;               // Freelancer of project
+        address       client;                   // Client of project
+        address       projectToken;             // Project token using in Project
+        ProjectStatus status;                   // Project's status
+        uint256       totalAmount;              // Amount of each milestone
+        uint256       finishedMilestonesCount;  // Number of milestones
+        uint256       lastMilestoneId;          // Last milestone id
+        uint256       createdDate;              // Project's created day
+        uint256       expiredDate;              // Project's expired day
+        uint256[]     pendingMilestoneIds;      // List of milestone ids of this milestone
         uint256 clientFeePercent;
 		uint256 freelancerFeePercent;
-		bool       	  isMultiphase;             // Number of phases
+		bool       	  isMultimilestone;             // Number of milestones
     }
 
     //  prettier-ignore
     /*
-     *  @dev Phase struct is information of phase includes: created date, paid date, status
+     *  @dev Milestone struct is information of milestone includes: created date, paid date, status
      */
-    struct Phase {
-        uint256 expiredDate;                // Phase's active date
-		uint256 amount;                // Phase's active date
-        PhaseStatus status;               // Phase status
+    struct Milestone {
+        uint256 expiredDate;                // Milestone's active date
+		uint256 amount;                // Milestone's active date
+        MilestoneStatus status;               // Milestone status
     }
 
     /**
-     *  Status enum is status of a payment
+     *  Status enum is status of a project
      *
      *          Suit                                              Value
      *           |                                                  |
-     *  After Business Owner requests payment                   REQUESTING
+     *  After Business Owner requests project                   REQUESTING
      *  After Client escrows money                              PAID
-     *  When payment is still in processing                     CLAIMING
-     *  After the last phase is completed                   FINISHED
-     *  After Client cancels payment                            CANCELED
+     *  When project is still in processing                     CLAIMING
+     *  After the last milestone is completed                   FINISHED
+     *  After Client stop project                            STOPPED
      */
-    enum PaymentStatus {
+    enum ProjectStatus {
         REQUESTING,
         PAID,
         PROCESSING,
         FINISHED,
-        CANCELED
+        STOPPED
     }
 
     /**
-     *  PhaseStatus enum is status of per phase
+     *  MilestoneStatus enum is status of per milestone
      *
      *          Suit                                                                        Value
      *           |                                                                             |
-     *  Default phase status                                                            CREATED
+     *  Default milestone status                                                            CREATED
      *  After Business provide service to Client                                            FREELANCER_CONFIRMED
      *  After Client confirm to release money                                               CLIENT_CONFIRMED
-     *  After Business Owner claim phase                                                CLAIMED
+     *  After Business Owner claim milestone                                                CLAIMED
      *  After Business Owner not provide service on time and fund is refunded to Client     CANCELED
      */
-    enum PhaseStatus {
+    enum MilestoneStatus {
         PENDING,
         FREELANCER_CONFIRMED,
         CLIENT_CONFIRMED,
@@ -82,31 +82,31 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     uint256 public constant FEE_DENOMINATOR = 10000;
 
     /**
-     *  @dev serviceFee uint256 is service fee of each payment
+     *  @dev serviceFee uint256 is service fee of each project
      */
     uint256 public clientFeePercent;
 
     uint256 public freelancerFeePercent;
 
     /**
-     *  @dev lastPaymentId uint256 is the latest requested payment ID started by 1
+     *  @dev lastProjectId uint256 is the latest requested project ID started by 1
      */
-    uint256 public lastPaymentId;
+    uint256 public lastProjectId;
 
     /**
-     *  @dev Mapping payment ID to a payment detail
+     *  @dev Mapping project ID to a project detail
      */
-    mapping(uint256 => Payment) public payments;
+    mapping(uint256 => Project) public projects;
 
     /**
-     *  @dev Mapping payment ID to phase ID to get info of per phase
+     *  @dev Mapping project ID to milestone ID to get info of per milestone
      */
-    mapping(uint256 => mapping(uint256 => Phase)) public phases;
+    mapping(uint256 => mapping(uint256 => Milestone)) public milestones;
 
     /**
      *  @dev Mapping address of token contract to permit to withdraw
      */
-    mapping(address => bool) public permittedPaymentTokens;
+    mapping(address => bool) public permittedProjectTokens;
 
     /**
      *  @dev Mapping address of token contract to permit to withdraw
@@ -114,41 +114,41 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     mapping(address => uint256) public feePercentOfAddress;
 
     event AcceptBid(
-        uint256 indexed paymentId,
-        uint256 indexed phaseId,
+        uint256 indexed projectId,
+        uint256 indexed milestoneId,
         address freelancer,
         address client,
-        address paymentToken,
+        address projectToken,
         uint256 totalAmount,
         uint256 createdDate,
         uint256 expiredDate,
-        PaymentStatus phaseStatus,
-        bool isMultiphase
+        ProjectStatus milestoneStatus,
+        bool isMultimilestone
     );
-    event Deposited(uint256 indexed paymentId, PaymentStatus paymentStatus);
-    event ClientConfirmPhases(uint256 indexed paymentId, uint256[] phaseIds);
-    event ConfirmedToRelease(uint256 indexed paymentId, uint256[] phaseIds);
+    event Deposited(uint256 indexed projectId, ProjectStatus projectStatus);
+    event ClientConfirmMilestones(uint256 indexed projectId, uint256[] milestoneIds);
+    event ConfirmedToRelease(uint256 indexed projectId, uint256[] milestoneIds);
     event Claimed(
-        uint256 indexed paymentId,
+        uint256 indexed projectId,
         address indexed bo,
-        address indexed paymentToken,
+        address indexed projectToken,
         uint256 amount,
         uint256 serviceFee,
-        uint256[] phaseIds,
-        PaymentStatus paymentStatus
+        uint256[] milestoneIds,
+        ProjectStatus projectStatus
     );
-    event Canceled(
+    event Stopped(
         address indexed bo,
-        uint256 indexed paymentId,
+        uint256 indexed projectId,
         uint256 amount,
-        address paymentToken,
-        PaymentStatus paymentStatus
+        address projectToken,
+        ProjectStatus projectStatus
     );
     event Judged(
-        uint256 indexed paymentId,
-        uint256[] indexed phaseIds,
+        uint256 indexed projectId,
+        uint256[] indexed milestoneIds,
         bool indexed isCancel,
-        PaymentStatus paymentStatus
+        ProjectStatus projectStatus
     );
     event Toggled(bool isPaused);
 
@@ -170,29 +170,29 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         _;
     }
 
-    modifier onlyFreelancer(uint256 _paymentId) {
-        require(_msgSender() == payments[_paymentId].freelancer, "Caller is not the freelancer of this payment");
+    modifier onlyFreelancer(uint256 _projectId) {
+        require(_msgSender() == projects[_projectId].freelancer, "Caller is not the freelancer of this project");
         _;
     }
 
-    modifier onlyClient(uint256 _paymentId) {
-        require(_msgSender() == payments[_paymentId].client, "Caller is not the Client of this payment");
+    modifier onlyClient(uint256 _projectId) {
+        require(_msgSender() == projects[_projectId].client, "Caller is not the Client of this project");
         _;
     }
 
-    modifier onlyValidPayment(uint256 _paymentId) {
-        require(_paymentId > 0 && _paymentId <= lastPaymentId, "Invalid payment id");
-        require(payments[_paymentId].status != PaymentStatus.CANCELED, "Payment is canceled");
+    modifier onlyValidProject(uint256 _projectId) {
+        require(_projectId > 0 && _projectId <= lastProjectId, "Invalid project id");
+        require(projects[_projectId].status != ProjectStatus.STOPPED, "Project is canceled");
         _;
     }
 
-    modifier onlyRequestingPayment(uint256 _paymentId) {
-        require(payments[_paymentId].status == PaymentStatus.REQUESTING, "Payment isn't requesting");
+    modifier onlyRequestingProject(uint256 _projectId) {
+        require(projects[_projectId].status == ProjectStatus.REQUESTING, "Project isn't requesting");
         _;
     }
 
-    modifier onlyNonExpiredPayment(uint256 _paymentId) {
-        require(block.timestamp <= payments[_paymentId].expiredDate, "Payment is expired");
+    modifier onlyNonExpiredProject(uint256 _projectId) {
+        require(block.timestamp <= projects[_projectId].expiredDate, "Project is expired");
         _;
     }
 
@@ -226,19 +226,19 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
-     *  @dev    Set permitted token for payment
+     *  @dev    Set permitted token for project
      *
      *  @notice Only Owner (KickstarService) can call this function.
      *
      *          Name            Meaning
-     *  @param  _paymentToken    Address of token that needs to be permitted
+     *  @param  _projectToken    Address of token that needs to be permitted
      *  @param  _allowed         Allow or not to pay with this token
      *
      *  Emit event {SetPermittedToken}
      */
-    function setPermittedToken(address _paymentToken, bool _allowed) external whenNotPaused onlyOwner {
-        permittedPaymentTokens[_paymentToken] = _allowed;
-        emit SetPermittedToken(_paymentToken, _allowed);
+    function setPermittedToken(address _projectToken, bool _allowed) external whenNotPaused onlyOwner {
+        permittedProjectTokens[_projectToken] = _allowed;
+        emit SetPermittedToken(_projectToken, _allowed);
     }
 
     function setFeePercentToAddress(address _addr, uint256 _feePercent) external whenNotPaused onlyOwner {
@@ -278,162 +278,162 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
-     *  @dev    Create a new payment
+     *  @dev    Create a new project
      *
      *  @notice Anyone can call this function.
      *
      *          Name                    Meaning
      *  @param  _freelancer                 Address of client
-     *  @param  _paymentToken           Token contract address
-     *  @param  _totalAmount                 Total amount of payment
-     *  @param  _amountOfPhase    Array of amount per installment of payment
-     *  @param  _expiredDateOfPhase    Array of expired per date installment of payment
-     *  @param  _expiredDate            Payment's expired date
-     *  @param  _isMultiphase            Multiphase
+     *  @param  _projectToken           Token contract address
+     *  @param  _totalAmount                 Total amount of project
+     *  @param  _amountOfMilestone    Array of amount per installment of project
+     *  @param  _expiredDateOfMilestone    Array of expired per date installment of project
+     *  @param  _expiredDate            Project's expired date
+     *  @param  _isMultimilestone            Multimilestone
      *
      *  Emit event {AcceptBid}
      */
     function acceptBid(
         address _freelancer,
-        address _paymentToken,
+        address _projectToken,
         uint256 _totalAmount,
         uint256 _expiredDate,
-        uint256[] memory _amountOfPhase,
-        uint256[] memory _expiredDateOfPhase,
-        bool _isMultiphase
+        uint256[] memory _amountOfMilestone,
+        uint256[] memory _expiredDateOfMilestone,
+        bool _isMultimilestone
     ) external whenNotPaused {
         require(_msgSender() != _freelancer, "Freelancer can not be same");
-        require(permittedPaymentTokens[_paymentToken] == true || _paymentToken == address(0), "Invalid payment token");
+        require(permittedProjectTokens[_projectToken] == true || _projectToken == address(0), "Invalid project token");
         require(_totalAmount > 0, "Amount per installment must be greater than 0");
-        if (_isMultiphase) {
-            require(_amountOfPhase.length > 0 && _amountOfPhase.length == _expiredDateOfPhase.length, "Invalid length");
+        if (_isMultimilestone) {
+            require(_amountOfMilestone.length > 0 && _amountOfMilestone.length == _expiredDateOfMilestone.length, "Invalid length");
         } else {
             require(
-                _amountOfPhase.length == 1 && _amountOfPhase.length == _expiredDateOfPhase.length,
-                "Job is not multiphase"
+                _amountOfMilestone.length == 1 && _amountOfMilestone.length == _expiredDateOfMilestone.length,
+                "Job is not multimilestone"
             );
         }
 
         uint256 currentTime = block.timestamp;
         require(_expiredDate > currentTime, "Invalid expired date");
 
-        lastPaymentId++;
-        Payment storage payment = payments[lastPaymentId];
-        payment.client = _msgSender();
-        payment.freelancer = _freelancer;
-        payment.paymentToken = _paymentToken;
-        payment.totalAmount = _totalAmount;
-        payment.isMultiphase = _isMultiphase;
-        payment.createdDate = currentTime;
-        payment.expiredDate = _expiredDate;
-        payment.clientFeePercent = feePercentOfAddress[_msgSender()] > 0
+        lastProjectId++;
+        Project storage project = projects[lastProjectId];
+        project.client = _msgSender();
+        project.freelancer = _freelancer;
+        project.projectToken = _projectToken;
+        project.totalAmount = _totalAmount;
+        project.isMultimilestone = _isMultimilestone;
+        project.createdDate = currentTime;
+        project.expiredDate = _expiredDate;
+        project.clientFeePercent = feePercentOfAddress[_msgSender()] > 0
             ? feePercentOfAddress[_msgSender()]
             : clientFeePercent;
-        payment.freelancerFeePercent = feePercentOfAddress[_freelancer] > 0
+        project.freelancerFeePercent = feePercentOfAddress[_freelancer] > 0
             ? feePercentOfAddress[_freelancer]
             : freelancerFeePercent;
 
         uint256 _totalValue = 0;
-        for (uint256 i = 0; i < _amountOfPhase.length; i++) {
-            payment.lastPhaseId++;
-            require(_amountOfPhase[i] > 0, "Invalid amount of phase");
-            require(_expiredDateOfPhase[i] > 0, "Invalid expired date of phase");
+        for (uint256 i = 0; i < _amountOfMilestone.length; i++) {
+            project.lastMilestoneId++;
+            require(_amountOfMilestone[i] > 0, "Invalid amount of milestone");
+            require(_expiredDateOfMilestone[i] > 0, "Invalid expired date of milestone");
             if (i > 0) {
                 require(
-                    _expiredDateOfPhase[i] > _expiredDateOfPhase[i - 1],
-                    "Expired date of phase after must be greater than before"
+                    _expiredDateOfMilestone[i] > _expiredDateOfMilestone[i - 1],
+                    "Expired date of milestone after must be greater than before"
                 );
             }
-            _totalValue += _amountOfPhase[i];
-            phases[lastPaymentId][payment.lastPhaseId] = Phase(
-                _expiredDateOfPhase[i],
-                _amountOfPhase[i],
-                PhaseStatus.PENDING
+            _totalValue += _amountOfMilestone[i];
+            milestones[lastProjectId][project.lastMilestoneId] = Milestone(
+                _expiredDateOfMilestone[i],
+                _amountOfMilestone[i],
+                MilestoneStatus.PENDING
             );
         }
         require(_totalValue == _totalAmount, "Invalid total amount");
 
         emit AcceptBid(
-            lastPaymentId,
-            payment.lastPhaseId,
+            lastProjectId,
+            project.lastMilestoneId,
             _freelancer,
             _msgSender(),
-            _paymentToken,
+            _projectToken,
             _totalAmount,
             currentTime,
             _expiredDate,
-            payment.status,
-            _isMultiphase
+            project.status,
+            _isMultimilestone
         );
     }
 
     /**
-     *  @dev    Client cancels payment according to "Right to Cancel"
+     *  @dev    Client cancels project according to "Right to Cancel"
      *
      *  @notice Only Client can call this function
      *
      *          Name                Meaning
-     *  @param  _paymentId          ID of payment that client want to cancel
+     *  @param  _projectId          ID of project that client want to cancel
      *
      *  Emit event {Canceled}
      */
-    function cancelPayment(uint256 _paymentId) external whenNotPaused onlyValidPayment(_paymentId) nonReentrant {
+    function stopProject(uint256 _projectId) external whenNotPaused onlyValidProject(_projectId) nonReentrant {
         uint256 currentTime = block.timestamp;
-        Payment storage payment = payments[_paymentId];
+        Project storage project = projects[_projectId];
 
         require(
-            payment.status == PaymentStatus.REQUESTING || payment.status == PaymentStatus.PAID,
-            "Payment has processed"
+            project.status == ProjectStatus.REQUESTING || project.status == ProjectStatus.PAID,
+            "Project has processed"
         );
-        require(currentTime <= payment.createdDate, "Can't cancel payment after cancelable duration");
+        require(currentTime <= project.createdDate, "Can't cancel project after cancelable duration");
 
-        PaymentStatus paymentStatusBefore = payment.status;
-        payment.status = PaymentStatus.CANCELED;
+        ProjectStatus projectStatusBefore = project.status;
+        project.status = ProjectStatus.STOPPED;
 
-        if (paymentStatusBefore == PaymentStatus.PAID) {
-            _withdraw(payment.client, payment.paymentToken, payment.totalAmount);
+        if (projectStatusBefore == ProjectStatus.PAID) {
+            _withdraw(project.client, project.projectToken, project.totalAmount);
         }
 
-        emit Canceled(payment.client, _paymentId, payment.totalAmount, payment.paymentToken, payment.status);
+        emit Stopped(project.client, _projectId, project.totalAmount, project.projectToken, project.status);
     }
 
     /**
-     *  @dev    Client pay for the payment
+     *  @dev    Client pay for the project
      *
      *  @notice Only Client can call this function.
      *
      *          Name        Meaning
-     *  @param  _paymentId  ID of payment that needs to be updated
+     *  @param  _projectId  ID of project that needs to be updated
      *  @param  _amount     Amount that needs to be paid
      *
      *  Emit event {Deposited}
      */
     function deposit(
-        uint256 _paymentId,
+        uint256 _projectId,
         uint256 _amount
     )
         external
         payable
         whenNotPaused
-        onlyValidPayment(_paymentId)
-        onlyNonExpiredPayment(_paymentId)
-        onlyRequestingPayment(_paymentId)
-        onlyClient(_paymentId)
+        onlyValidProject(_projectId)
+        onlyNonExpiredProject(_projectId)
+        onlyRequestingProject(_projectId)
+        onlyClient(_projectId)
         nonReentrant
     {
-        Payment storage payment = payments[_paymentId];
-        require(_amount == payment.totalAmount, "Must pay enough total amount");
+        Project storage project = projects[_projectId];
+        require(_amount == project.totalAmount, "Must pay enough total amount");
 
-        payment.status = PaymentStatus.PAID;
+        project.status = ProjectStatus.PAID;
 
-        if (permittedPaymentTokens[payment.paymentToken]) {
+        if (permittedProjectTokens[project.projectToken]) {
             require(msg.value == 0, "Can only pay by token");
-            IERC20Upgradeable(payment.paymentToken).safeTransferFrom(_msgSender(), address(this), _amount);
+            IERC20Upgradeable(project.projectToken).safeTransferFrom(_msgSender(), address(this), _amount);
         } else {
             require(msg.value == _amount, "Invalid amount");
         }
 
-        emit Deposited(_paymentId, payment.status);
+        emit Deposited(_projectId, project.status);
     }
 
     /**
@@ -442,156 +442,156 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *  @notice Only Client Owner can call this function.
      *
      *          Name        Meaning
-     *  @param  _paymentId  ID of payment that needs to be updated
+     *  @param  _projectId  ID of project that needs to be updated
      *
-     *  Emit event {ClientConfirmPhases}
+     *  Emit event {ClientConfirmMilestones}
      */
-    function clientConfirmPhases(
-        uint256 _paymentId,
-        uint256[] memory _phaseIds
-    ) external whenNotPaused onlyValidPayment(_paymentId) onlyNonExpiredPayment(_paymentId) onlyClient(_paymentId) {
-        Payment storage payment = payments[_paymentId];
-        require(payment.status == PaymentStatus.PROCESSING, "Payment isn't processing");
-        require(_phaseIds.length > 0, "Invalid phaseIds");
+    function clientConfirmMilestones(
+        uint256 _projectId,
+        uint256[] memory _milestoneIds
+    ) external whenNotPaused onlyValidProject(_projectId) onlyNonExpiredProject(_projectId) onlyClient(_projectId) {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.PROCESSING, "Project isn't processing");
+        require(_milestoneIds.length > 0, "Invalid milestoneIds");
 
-        for (uint256 i = 0; i < _phaseIds.length; i++) {
-            require(_phaseIds[i] <= payment.lastPhaseId, "Invalid phaseId");
-            Phase storage phase = phases[_paymentId][_phaseIds[i]];
+        for (uint256 i = 0; i < _milestoneIds.length; i++) {
+            require(_milestoneIds[i] <= project.lastMilestoneId, "Invalid milestoneId");
+            Milestone storage milestone = milestones[_projectId][_milestoneIds[i]];
             require(
-                phase.status == PhaseStatus.FREELANCER_CONFIRMED,
-                "This phase has not been confirmed by freelancer"
+                milestone.status == MilestoneStatus.FREELANCER_CONFIRMED,
+                "This milestone has not been confirmed by freelancer"
             );
-            phase.status = PhaseStatus.CLIENT_CONFIRMED;
-            payment.pendingPhaseIds.push(_phaseIds[i]);
+            milestone.status = MilestoneStatus.CLIENT_CONFIRMED;
+            project.pendingMilestoneIds.push(_milestoneIds[i]);
         }
 
-        emit ClientConfirmPhases(_paymentId, _phaseIds);
+        emit ClientConfirmMilestones(_projectId, _milestoneIds);
     }
 
     /**
-     *  @dev    Freelancer confirm to release phase
+     *  @dev    Freelancer confirm to release milestone
      *
      *  @notice Only Freelancer can call this function.
      *
      *          Name          Meaning
-     *  @param  _paymentId    ID of payment that needs to be confirmed
+     *  @param  _projectId    ID of project that needs to be confirmed
      *
      *  Emit event {ConfirmedToRelease}
      */
     function confirmToRelease(
-        uint256 _paymentId,
-        uint256[] memory _phaseIds
-    ) external whenNotPaused onlyValidPayment(_paymentId) onlyNonExpiredPayment(_paymentId) onlyFreelancer(_paymentId) {
-        Payment storage payment = payments[_paymentId];
-        require(payment.status == PaymentStatus.PROCESSING, "Payment isn't processing");
-        require(_phaseIds.length > 0, "Invalid phaseIds");
+        uint256 _projectId,
+        uint256[] memory _milestoneIds
+    ) external whenNotPaused onlyValidProject(_projectId) onlyNonExpiredProject(_projectId) onlyFreelancer(_projectId) {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.PROCESSING, "Project isn't processing");
+        require(_milestoneIds.length > 0, "Invalid milestoneIds");
 
-        for (uint256 i = 0; i < _phaseIds.length; i++) {
-            require(_phaseIds[i] <= payment.lastPhaseId, "Invalid phaseId");
-            Phase storage phase = phases[_paymentId][_phaseIds[i]];
-            require(phase.status == PhaseStatus.PENDING, "Phase status is not pending");
-            phase.status = PhaseStatus.FREELANCER_CONFIRMED;
+        for (uint256 i = 0; i < _milestoneIds.length; i++) {
+            require(_milestoneIds[i] <= project.lastMilestoneId, "Invalid milestoneId");
+            Milestone storage milestone = milestones[_projectId][_milestoneIds[i]];
+            require(milestone.status == MilestoneStatus.PENDING, "Milestone status is not pending");
+            milestone.status = MilestoneStatus.FREELANCER_CONFIRMED;
         }
 
-        emit ConfirmedToRelease(_paymentId, _phaseIds);
+        emit ConfirmedToRelease(_projectId, _milestoneIds);
     }
 
     /**
-     *  @dev    Business Owner claim all phases of payment
+     *  @dev    Business Owner claim all milestones of project
      *
      *  @notice Only Business Owner can call this function.
      *
      *          Name          Meaning
-     *  @param  _paymentId    ID of payment want to claim all phases
+     *  @param  _projectId    ID of project want to claim all milestones
      *
      *  Emit event {Claimed}
      */
     function claim(
-        uint256 _paymentId
-    ) external whenNotPaused onlyValidPayment(_paymentId) onlyFreelancer(_paymentId) nonReentrant {
-        Payment storage payment = payments[_paymentId];
-        require(block.timestamp <= payment.expiredDate, "Claim time has expired");
-        require(payment.status == PaymentStatus.PROCESSING, "Payment hasn't been processing yet");
-        require(payment.pendingPhaseIds.length > 0, "Nothing to claim");
+        uint256 _projectId
+    ) external whenNotPaused onlyValidProject(_projectId) onlyFreelancer(_projectId) nonReentrant {
+        Project storage project = projects[_projectId];
+        require(block.timestamp <= project.expiredDate, "Claim time has expired");
+        require(project.status == ProjectStatus.PROCESSING, "Project hasn't been processing yet");
+        require(project.pendingMilestoneIds.length > 0, "Nothing to claim");
 
         uint256 claimableTotalAmount = 0;
-        // Set CLAIMED status for claimed phase
-        for (uint256 i = 0; i < payment.pendingPhaseIds.length; ++i) {
-            uint256 phaseId = payment.pendingPhaseIds[i];
-            phases[_paymentId][phaseId].status = PhaseStatus.CLAIMED;
-            claimableTotalAmount += phases[_paymentId][phaseId].amount;
+        // Set CLAIMED status for claimed milestone
+        for (uint256 i = 0; i < project.pendingMilestoneIds.length; ++i) {
+            uint256 milestoneId = project.pendingMilestoneIds[i];
+            milestones[_projectId][milestoneId].status = MilestoneStatus.CLAIMED;
+            claimableTotalAmount += milestones[_projectId][milestoneId].amount;
         }
 
-        payment.finishedPhasesCount += payment.pendingPhaseIds.length;
-        if (payment.finishedPhasesCount == payment.lastPhaseId) {
-            payment.status = PaymentStatus.FINISHED;
+        project.finishedMilestonesCount += project.pendingMilestoneIds.length;
+        if (project.finishedMilestonesCount == project.lastMilestoneId) {
+            project.status = ProjectStatus.FINISHED;
         }
 
-        uint256[] memory pendingPhaseIdsBefore = payment.pendingPhaseIds;
-        payment.pendingPhaseIds = new uint256[](0);
+        uint256[] memory pendingMilestoneIdsBefore = project.pendingMilestoneIds;
+        project.pendingMilestoneIds = new uint256[](0);
 
         // Calculate fee and transfer tokens
-        uint256 serviceFee = calculateServiceFee(claimableTotalAmount, payment.freelancerFeePercent);
+        uint256 serviceFee = calculateServiceFee(claimableTotalAmount, project.freelancerFeePercent);
         uint256 claimableAmount = claimableTotalAmount - serviceFee;
 
-        _withdraw(_msgSender(), payment.paymentToken, claimableAmount);
-        _withdraw(owner(), payment.paymentToken, serviceFee);
+        _withdraw(_msgSender(), project.projectToken, claimableAmount);
+        _withdraw(owner(), project.projectToken, serviceFee);
 
         emit Claimed(
-            _paymentId,
+            _projectId,
             _msgSender(),
-            payment.paymentToken,
+            project.projectToken,
             claimableAmount,
             serviceFee,
-            pendingPhaseIdsBefore,
-            payment.status
+            pendingMilestoneIdsBefore,
+            project.status
         );
     }
 
     /**
-     *  @dev    Return money for Client if Business Owner not provide services on time in a phase
+     *  @dev    Return money for Client if Business Owner not provide services on time in a milestone
      *
      *  @notice Only Owner (KickstarService) can call this function
      *
      *          Name                Meaning
-     *  @param  _paymentId          ID of payment that Owner (KickstarService) want to handle
-     *  @param  _phaseIds       ID of phases that want to judge
-     *  @param  _isCancel           true -> Client win -> cancel this phase; false -> BO win -> force client to confirm this phase
+     *  @param  _projectId          ID of project that Owner (KickstarService) want to handle
+     *  @param  _milestoneIds       ID of milestones that want to judge
+     *  @param  _isCancel           true -> Client win -> cancel this milestone; false -> BO win -> force client to confirm this milestone
      *
      *  Emit event {Judged}
      */
     function judge(
-        uint256 _paymentId,
-        uint256[] memory _phaseIds,
+        uint256 _projectId,
+        uint256[] memory _milestoneIds,
         bool _isCancel
-    ) external whenNotPaused onlyValidPayment(_paymentId) onlyOwner nonReentrant {
-        require(_phaseIds.length > 0, "Invalid phase ids");
+    ) external whenNotPaused onlyValidProject(_projectId) onlyOwner nonReentrant {
+        require(_milestoneIds.length > 0, "Invalid milestone ids");
 
-        Payment storage payment = payments[_paymentId];
-        require(payment.status == PaymentStatus.PROCESSING, "Payment hasn't been processing yet");
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.PROCESSING, "Project hasn't been processing yet");
 
-        for (uint256 i = 0; i < _phaseIds.length; i++) {
-            uint256 phaseId = _phaseIds[i];
-            Phase storage phase = phases[_paymentId][phaseId];
-            require(phase.status == PhaseStatus.FREELANCER_CONFIRMED, "Phase hasn't confirm yet");
+        for (uint256 i = 0; i < _milestoneIds.length; i++) {
+            uint256 milestoneId = _milestoneIds[i];
+            Milestone storage milestone = milestones[_projectId][milestoneId];
+            require(milestone.status == MilestoneStatus.FREELANCER_CONFIRMED, "Milestone hasn't confirm yet");
 
             if (_isCancel) {
-                payment.finishedPhasesCount++;
-                phase.status = PhaseStatus.CANCELED;
-                _withdraw(payment.client, payment.paymentToken, phase.amount);
+                project.finishedMilestonesCount++;
+                milestone.status = MilestoneStatus.CANCELED;
+                _withdraw(project.client, project.projectToken, milestone.amount);
             } else {
-                phase.status = PhaseStatus.CLIENT_CONFIRMED;
-                payment.pendingPhaseIds.push(phaseId);
+                milestone.status = MilestoneStatus.CLIENT_CONFIRMED;
+                project.pendingMilestoneIds.push(milestoneId);
             }
         }
 
-        emit Judged(_paymentId, _phaseIds, _isCancel, payment.status);
+        emit Judged(_projectId, _milestoneIds, _isCancel, project.status);
     }
 
     /**
-     *  @dev    Calculate service fee by amount payment
+     *  @dev    Calculate service fee by amount project
      *
-     *  @notice Service fee equal amount of payment mutiply serviceFeePercent. The actual service fee will be divided by WEIGHT_DECIMAL and 100
+     *  @notice Service fee equal amount of project mutiply serviceFeePercent. The actual service fee will be divided by WEIGHT_DECIMAL and 100
      *
      *          Name                Meaning
      *  @param  _amount             Amount of service fee that want to withdraw
@@ -604,15 +604,15 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
-     *  @dev    Get pending phase ids that waiting for BO claim from payment by payment id
+     *  @dev    Get pending milestone ids that waiting for BO claim from project by project id
      *
      *          Name                Meaning
-     *  @param  _paymentId          Payment id that phase ids are belong to
+     *  @param  _projectId          Project id that milestone ids are belong to
      *
-     *  @return Pending phase ids that waiting for BO claim
+     *  @return Pending milestone ids that waiting for BO claim
      */
-    function getPendingPhaseIds(uint256 _paymentId) external view returns (uint256[] memory) {
-        return payments[_paymentId].pendingPhaseIds;
+    function getPendingMilestoneIds(uint256 _projectId) external view returns (uint256[] memory) {
+        return projects[_projectId].pendingMilestoneIds;
     }
 
     /**
@@ -622,12 +622,12 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *
      *          Name                Meaning
      *  @param  _receiver           Address of receiver
-     *  @param  _paymentToken       Token address
+     *  @param  _projectToken       Token address
      *  @param  _amount             Amount of native coin or token that want to transfer
      */
-    function _withdraw(address _receiver, address _paymentToken, uint256 _amount) private {
-        if (permittedPaymentTokens[_paymentToken]) {
-            IERC20Upgradeable(_paymentToken).safeTransfer(_receiver, _amount);
+    function _withdraw(address _receiver, address _projectToken, uint256 _amount) private {
+        if (permittedProjectTokens[_projectToken]) {
+            IERC20Upgradeable(_projectToken).safeTransfer(_receiver, _amount);
         } else {
             Helper._transferNativeToken(_receiver, _amount);
         }
