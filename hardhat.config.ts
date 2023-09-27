@@ -82,6 +82,7 @@ const config: HardhatUserConfig = {
             runs: 200,
             details: { yul: true },
           },
+          viaIR: true
         },
       },
     ],
