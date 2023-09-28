@@ -20,16 +20,16 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         address       freelancer;               // Freelancer of project
         address       client;                   // Client of project
         address       paymentToken;             // Project token using in Project
-        uint256       milestoneQty;
-        uint256       budget;              // Amount of all milestone
-        uint256       amountPaid;              // The amount paid
-        uint256       amountCanceled;
-        uint256       amountClaimable;              // The amount claimable
-        uint256       amountTax;              // The tax amount
+        uint256       budget;                   // Amount of all milestone
+        uint256       amountPaid;               // The amount paid
+        uint256       amountClaimable;          // The amount claimable
+        uint256       amountCanceled;           // The amount canceled
+        uint256       amountClientWithdrawable; // The amount client can withdraw of milestone canceled
+        uint256       amountClientFee;          // The amount fee of client
         uint256       createdDate;              // Project's created day
         uint256       expiredDate;              // Project's expired day
-        uint256 clientFeePercent;               // Client fee percent
-		uint256 freelancerFeePercent;           // Freelancer fee percent
+        uint256       clientFeePercent;         // Client fee percent
+		uint256       freelancerFeePercent;     // Freelancer fee percent
         ProjectStatus status;                   // Project's status
     }
 
@@ -51,19 +51,24 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *
      *          Suit                                              Value
      *           |                                                  |
-     *  After Business Owner requests project                   REQUESTING
-     *  After Client escrows money                              PAID
-     *  When project is still in processing                     CLAIMING
+     *  After Client create project                             REQUESTING
+     *  When project is still in processing                     PROCESSING
      *  After the last milestone is completed                   FINISHED
-     *  After Client stop project                            STOPPED
+     *  After Client stop project                               STOPPED
+     *  Project has milestone canceled                          PARTIALLY_COMPLETED
      */
     enum ProjectStatus {
         REQUESTING,
-        PAID,
         PROCESSING,
         FINISHED,
-        STOPPED
+        STOPPED,
+        PARTIALLY_COMPLETED
     }
+
+    /**
+     *  @notice address verify message of function clientConfirm
+     */
+    address public verifier;
 
     uint256 public constant FEE_DENOMINATOR = 10000;
 
@@ -71,7 +76,6 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *  @dev serviceFee uint256 is service fee of each project
      */
     uint256 public clientFeePercent = 1500;
-
     uint256 public freelancerFeePercent = 500;
 
     /**
@@ -95,7 +99,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     mapping(address => bool) public permittedPaymentTokens;
 
     /**
-     *  @dev Mapping address of token contract to permit to withdraw
+     *  @dev Mapping address of user to set feePercent per user
      */
     mapping(address => uint256) public feePercentOfAddress;
 
@@ -103,7 +107,6 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         uint256 indexed projectId,
         address freelancer,
         address client,
-        uint256 milestoneQty,
         address paymentToken,
         uint256 budget,
         uint256 createdDate,
@@ -112,18 +115,26 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     );
     event Deposited(uint256 indexed projectId, ProjectStatus projectStatus);
     event FreelancerAcceptProject(uint256 indexed projectId);
-    event ClientConfirmMilestone(uint256 indexed projectId, uint256 indexed milestoneId);
+    event ClientConfirmed(uint256 indexed projectId, uint256 indexed milestoneId);
     event ConfirmedToRelease(uint256 indexed projectId, uint256 indexed milestoneId);
     event Claimed(
         uint256 indexed projectId,
-        address indexed bo,
+        address indexed freelancer,
+        address indexed paymentToken,
+        uint256 amount,
+        uint256 serviceFee,
+        ProjectStatus projectStatus
+    );
+    event ClientWithdrawn(
+        uint256 indexed projectId,
+        address indexed client,
         address indexed paymentToken,
         uint256 amount,
         uint256 serviceFee,
         ProjectStatus projectStatus
     );
     event Stopped(
-        address indexed bo,
+        address indexed client,
         uint256 indexed projectId,
         uint256 amount,
         address paymentToken,
@@ -145,13 +156,10 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     );
     event SetPermittedToken(address indexed token, bool indexed allowed);
     event SetFeePercentToAddress(address indexed addr, uint256 feePercent);
+    event SetVerifier(address indexed oldValue, address indexed newValue);
 
-    modifier onlyValidAddress(address _address) {
-        uint32 size;
-        assembly {
-            size := extcodesize(_address)
-        }
-        require((size <= 0) && _address != address(0), "Invalid address");
+    modifier notZeroAddress(address _account) {
+        require(_account != address(0), "Invalid address");
         _;
     }
 
@@ -171,11 +179,6 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         _;
     }
 
-    modifier onlyRequestingProject(uint256 _projectId) {
-        require(projects[_projectId].status == ProjectStatus.REQUESTING, "Project isn't requesting");
-        _;
-    }
-
     modifier onlyNonExpiredProject(uint256 _projectId) {
         require(block.timestamp <= projects[_projectId].expiredDate, "Project is expired");
         _;
@@ -184,10 +187,12 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     /**
      *  @dev Initialize new contract.
      */
-    function initialize(address _owner) public initializer {
+    function initialize(address _owner, address _verifier) public initializer {
         __Pausable_init();
         __Ownable_init();
         __ReentrancyGuard_init();
+
+        verifier = _verifier;
 
         transferOwnership(_owner);
         _pause();
@@ -226,7 +231,21 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         emit SetPermittedToken(_paymentToken, _allowed);
     }
 
-    function setFeePercentToAddress(address _addr, uint256 _feePercent) external whenNotPaused onlyOwner {
+    /**
+     *  @dev    Set service fee percentage to user
+     *
+     *  @notice Only Owner (KickstarService) can call this function.
+     *
+     *          Name            Meaning
+     *  @param  _addr           Address of user that needs to change fee
+     *  @param  _feePercent     New fee percent that want to be updated
+     *
+     *  Emit event {SetFeePercentToAddress}
+     */
+    function setFeePercentToAddress(
+        address _addr,
+        uint256 _feePercent
+    ) external whenNotPaused onlyOwner notZeroAddress(_addr) {
         require(_feePercent > 0 && _feePercent <= FEE_DENOMINATOR, "Invalid feePercent");
         feePercentOfAddress[_addr] = _feePercent;
         emit SetFeePercentToAddress(_addr, _feePercent);
@@ -263,14 +282,30 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
+     * @notice Set address verify
+     *
+     * @dev    Only owner or admin can call this function.
+     *
+     * @param  _verifier   Address of verify message.
+     *
+     * emit {SetVerifier} events
+     */
+    function setVerifier(address _verifier) external onlyOwner notZeroAddress(_verifier) {
+        require(_verifier != verifier, "Verifier already exists");
+
+        address _oldValue = verifier;
+        verifier = _verifier;
+        emit SetVerifier(_oldValue, verifier);
+    }
+
+    /**
      *  @dev    Create a new project
      *
      *  @notice Anyone can call this function.
      *
      *          Name                    Meaning
-     *  @param  _freelancer                 Address of client
+     *  @param  _freelancer             Address of client
      *  @param  _paymentToken           Token contract address
-     *  @param  _milestoneQty                 Qty of milestone
      *  @param  _budget                 Total amount of project
      *  @param  _expiredDate            Project's expired date
      *
@@ -279,12 +314,11 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     function acceptBid(
         address _freelancer,
         address _paymentToken,
-        uint256 _milestoneQty,
         uint256 _budget,
         uint256 _expiredDate
-    ) external payable whenNotPaused {
+    ) external payable whenNotPaused notZeroAddress(_freelancer) {
         require(_msgSender() != _freelancer, "Freelancer can not be same");
-        require(permittedPaymentTokens[_paymentToken] == true || _paymentToken == address(0), "Invalid project token");
+        require(permittedPaymentTokens[_paymentToken] || _paymentToken == address(0), "Invalid project token");
         require(_budget > 0, "Amount per installment must be greater than 0");
 
         uint256 currentTime = block.timestamp;
@@ -295,11 +329,10 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         project.client = _msgSender();
         project.freelancer = _freelancer;
         project.paymentToken = _paymentToken;
-        project.milestoneQty = _milestoneQty;
         project.budget = _budget;
         project.createdDate = currentTime;
         project.expiredDate = _expiredDate;
-        project.status = ProjectStatus.PAID;
+        project.status = ProjectStatus.REQUESTING;
         project.clientFeePercent = feePercentOfAddress[_msgSender()] > 0
             ? feePercentOfAddress[_msgSender()]
             : clientFeePercent;
@@ -307,14 +340,13 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
             ? feePercentOfAddress[_freelancer]
             : freelancerFeePercent;
 
-        project.amountTax = calculateServiceFee(project.budget, clientFeePercent);
-        _deposit(project.paymentToken, _msgSender(), project.budget + project.amountTax);
+        project.amountClientFee = calculateServiceFee(project.budget, clientFeePercent);
+        _deposit(project.paymentToken, _msgSender(), project.budget + project.amountClientFee);
 
         emit AcceptBid(
             lastProjectId,
             _freelancer,
             _msgSender(),
-            _milestoneQty,
             _paymentToken,
             _budget,
             currentTime,
@@ -337,13 +369,10 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         uint256 _projectId
     ) external whenNotPaused onlyValidProject(_projectId) onlyClient(_projectId) nonReentrant {
         Project storage project = projects[_projectId];
-        require(
-            project.status == ProjectStatus.REQUESTING || project.status == ProjectStatus.PAID,
-            "Project has processed"
-        );
+        require(project.status == ProjectStatus.REQUESTING, "Project is not requesting");
 
         project.status = ProjectStatus.STOPPED;
-        uint256 _totalAmount = project.budget + project.amountTax;
+        uint256 _totalAmount = project.budget + project.amountClientFee;
 
         if (_totalAmount > 0) {
             project.amountCanceled = _totalAmount;
@@ -367,10 +396,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         uint256 _projectId
     ) external whenNotPaused onlyValidProject(_projectId) onlyNonExpiredProject(_projectId) onlyFreelancer(_projectId) {
         Project storage project = projects[_projectId];
-        require(
-            project.status == ProjectStatus.REQUESTING || project.status == ProjectStatus.PAID,
-            "Project isn't processing"
-        );
+        require(project.status == ProjectStatus.REQUESTING, "Project is not requesting");
         project.status = ProjectStatus.PROCESSING;
 
         emit FreelancerAcceptProject(_projectId);
@@ -381,15 +407,15 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *
      *  @notice Only Client Owner can call this function.
      *
-     *          Name        Meaning
-     *  @param  _projectId  The id of project
-     *  @param  _milestoneId  The id of milestone
-     *  @param  _amount  Amount to freelancer can claim
-     *  @param  _nonce  The nonce referred to here is not the same as an Ethereum account's nonce
-     *  @param  _expiry  The date when the signature expires
-     *  @param _signature The ECDSA signature
+     *          Name                Meaning
+     *  @param  _projectId          The id of project
+     *  @param  _milestoneId        The id of milestone
+     *  @param  _amount             Amount to freelancer can claim
+     *  @param  _nonce              The nonce referred to here is not the same as an Ethereum account's nonce
+     *  @param  _expiry             The date when the signature expires
+     *  @param _signature           The ECDSA signature
      *
-     *  Emit event {ClientConfirmMilestone}
+     *  Emit event {ClientConfirmed}
      */
     function clientConfirm(
         uint256 _projectId,
@@ -409,14 +435,13 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.PROCESSING, "Project isn't processing");
         require(_amount > 0 && project.amountPaid + _amount <= project.budget, "Invalid amount");
-        require(_milestoneId <= project.milestoneQty, "Invalid milestoneId");
         require(!isPaidMilestones[_projectId][_milestoneId], "Milestone has been paid");
         require(
             isValidSignature(
                 _projectId,
                 _milestoneId,
                 _amount,
-                Signature({ signer: owner(), nonce: _nonce, expiry: _expiry, signature: _signature })
+                Signature({ signer: verifier, nonce: _nonce, expiry: _expiry, signature: _signature })
             ),
             "Signature is invalid"
         );
@@ -426,16 +451,18 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         project.amountPaid += _amount;
         project.amountClaimable += _amount;
 
-        emit ClientConfirmMilestone(_projectId, _milestoneId);
+        _updateProject(project);
+
+        emit ClientConfirmed(_projectId, _milestoneId);
     }
 
     /**
-     *  @dev    Freelancer claim all milestones of project
+     *  @dev    Freelancer claim amount of project
      *
      *  @notice Only Freelancer can call this function.
      *
      *          Name          Meaning
-     *  @param  _projectId    ID of project want to claim all milestones
+     *  @param  _projectId    ID of project want to claim
      *
      *  Emit event {Claimed}
      */
@@ -445,10 +472,6 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         Project storage project = projects[_projectId];
         require(block.timestamp <= project.expiredDate, "Claim time has expired");
         require(project.amountClaimable > 0, "Nothing to claim");
-
-        if (project.amountPaid == project.budget) {
-            project.status = ProjectStatus.FINISHED;
-        }
 
         // Calculate fee and transfer tokens
         uint256 serviceFee = calculateServiceFee(project.amountClaimable, project.freelancerFeePercent);
@@ -462,25 +485,33 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         emit Claimed(_projectId, _msgSender(), project.paymentToken, claimableAmount, serviceFee, project.status);
     }
 
+    /**
+     *  @dev    Client withdraw amount canceled of project
+     *
+     *  @notice Only Client can call this function.
+     *
+     *          Name          Meaning
+     *  @param  _projectId    ID of project want to withdraw
+     *
+     *  Emit event {ClientWithdrawn}
+     */
     function clientWithdraw(
         uint256 _projectId
     ) external whenNotPaused onlyValidProject(_projectId) onlyClient(_projectId) nonReentrant {
         Project storage project = projects[_projectId];
         require(block.timestamp <= project.expiredDate, "Claim time has expired");
-        require(project.amountCanceled > 0, "Nothing to withdraw");
+        require(project.amountClientWithdrawable > 0, "Nothing to withdraw");
 
-        if (project.amountCanceled == project.budget) {
-            project.status = ProjectStatus.STOPPED;
+        uint256 claimableAmount = project.amountClientWithdrawable;
+        if (project.status == ProjectStatus.PARTIALLY_COMPLETED || project.status == ProjectStatus.STOPPED) {
+            claimableAmount += project.amountClientFee;
         }
 
-        // Calculate fee and transfer tokens
-        uint256 serviceFee = calculateServiceFee(project.amountCanceled, project.freelancerFeePercent);
-        uint256 claimableAmount = project.amountClaimable - serviceFee;
+        project.amountClientWithdrawable = 0;
 
         _withdraw(_msgSender(), project.paymentToken, claimableAmount);
-        _withdraw(owner(), project.paymentToken, serviceFee);
 
-        emit Claimed(_projectId, _msgSender(), project.paymentToken, claimableAmount, serviceFee, project.status);
+        emit ClientWithdrawn(_projectId, _msgSender(), project.paymentToken, claimableAmount, 0, project.status);
     }
 
     /**
@@ -491,8 +522,8 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *          Name                Meaning
      *  @param  _projectId          ID of project that Owner (KickstarService) want to handle
      *  @param  _milestoneIds       ID of milestones that want to judge
-     *  @param  _amounts       Amount of milestones that want to judge
-     *  @param  _isCancel           true -> Client win -> cancel this milestone; false -> BO win -> force client to confirm this milestone
+     *  @param  _amounts            Amount of milestones that want to judge
+     *  @param  _isCancel           true -> Client win -> cancel this milestone; false -> freelancer win -> force client to confirm this milestone
      *
      *  Emit event {Judged}
      */
@@ -515,10 +546,14 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
 
             if (_isCancel) {
                 project.amountCanceled += _amounts[i];
+                project.amountClientWithdrawable += _amounts[i];
             } else {
+                project.amountPaid += _amounts[i];
                 project.amountClaimable += _amounts[i];
             }
         }
+
+        _updateProject(project);
 
         emit Judged(_projectId, _milestoneIds, _isCancel, project.status);
     }
@@ -539,47 +574,48 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
-     *  @dev    Get pending milestone ids that waiting for BO claim from project by project id
+     *  @dev    Get claimable amount of the freelancer's project
      *
      *          Name                Meaning
-     *  @param  _projectId          Project id that milestone ids are belong to
+     *  @param  _projectId          Project id
      *
      */
     function getFreelancerClaimable(uint256 _projectId) external view returns (uint256) {
         return projects[_projectId].amountClaimable;
     }
 
-    function getClientClaimable(uint256 _projectId) external view returns (uint256) {
-        return projects[_projectId].amountCanceled;
+    /**
+     *  @dev    Get withdrawable amount of client's project
+     *
+     *          Name                Meaning
+     *  @param  _projectId          Project id
+     *
+     */
+    function getClientWithdrawable(uint256 _projectId) external view returns (uint256) {
+        return projects[_projectId].amountClientWithdrawable;
     }
 
     /**
-     *  @dev    Withdraw token from contract
-     *
-     *  @notice Transfer native coin or token to address
-     *
-     *          Name                Meaning
-     *  @param  _receiver           Address of receiver
-     *  @param  _paymentToken       Token address
-     *  @param  _amount             Amount of native coin or token that want to transfer
+     * @dev This function gets the current chain ID.
      */
-    function _withdraw(address _receiver, address _paymentToken, uint256 _amount) private {
-        if (permittedPaymentTokens[_paymentToken]) {
-            IERC20Upgradeable(_paymentToken).safeTransfer(_receiver, _amount);
-        } else {
-            Helper._transferNativeToken(_receiver, _amount);
+    function getChainID() public view returns (uint256) {
+        uint256 id;
+        // solhint-disable-next-line no-inline-assembly
+        assembly {
+            id := chainid()
         }
+        return id;
     }
 
-    function _deposit(address _paymentToken, address _from, uint256 _amount) private {
-        if (permittedPaymentTokens[_paymentToken]) {
-            require(msg.value == 0, "Can only pay by token");
-            IERC20Upgradeable(_paymentToken).safeTransferFrom(_from, address(this), _amount);
-        } else {
-            require(msg.value == _amount, "Invalid amount");
-        }
-    }
-
+    /**
+     *  @dev    Check valid signature
+     *
+     *          Name               Meaning
+     *  @param  _projectId         Project
+     *  @param  _milestoneId       Milestone id
+     *  @param  _amount            Amount of milestone
+     *  @param  _signature         Signature to verify
+     */
     function isValidSignature(
         uint256 _projectId,
         uint256 _milestoneId,
@@ -603,19 +639,61 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         }
     }
 
-    function getEncodedSignature(Signature memory _signature) internal pure returns (bytes memory) {
-        return abi.encodePacked(_signature.signer, _signature.nonce, _signature.expiry);
+    /**
+     *  @dev    Withdraw token from contract
+     *
+     *  @notice Transfer native coin or token to address
+     *
+     *          Name                Meaning
+     *  @param  _receiver           Address of receiver
+     *  @param  _paymentToken       Token address
+     *  @param  _amount             Amount of native coin or token that want to transfer
+     */
+    function _withdraw(address _receiver, address _paymentToken, uint256 _amount) private {
+        if (permittedPaymentTokens[_paymentToken]) {
+            IERC20Upgradeable(_paymentToken).safeTransfer(_receiver, _amount);
+        } else {
+            Helper._transferNativeToken(_receiver, _amount);
+        }
     }
 
     /**
-     * @dev This function gets the current chain ID.
+     *  @dev    Deposit token from contract
+     *
+     *  @notice Transfer native coin or token to address
+     *
+     *          Name                Meaning
+     *  @param  _paymentToken       Token address
+     *  @param  _from               Address of sender
+     *  @param  _amount             Amount of native coin or token that want to transfer
      */
-    function getChainID() public view returns (uint256) {
-        uint256 id;
-        // solhint-disable-next-line no-inline-assembly
-        assembly {
-            id := chainid()
+    function _deposit(address _paymentToken, address _from, uint256 _amount) private {
+        if (permittedPaymentTokens[_paymentToken]) {
+            require(msg.value == 0, "Can only pay by token");
+            IERC20Upgradeable(_paymentToken).safeTransferFrom(_from, address(this), _amount);
+        } else {
+            require(msg.value == _amount, "Invalid amount");
         }
-        return id;
+    }
+
+    function _updateProject(Project storage _project) private {
+        if (_project.amountPaid == _project.budget) {
+            _project.status = ProjectStatus.FINISHED;
+            _withdraw(owner(), project.paymentToken, _project.amountClientFee);
+        } else if (_project.amountCanceled == _project.budget) {
+            _project.status = ProjectStatus.STOPPED;
+        } else if (_project.amountCanceled + _project.amountPaid == _project.budget) {
+            _project.status = ProjectStatus.PARTIALLY_COMPLETED;
+        }
+    }
+
+    /**
+     *  @dev    EncodePacked signature
+     *
+     *          Name               Meaning
+     *  @param  _signature         Signature to verify
+     */
+    function getEncodedSignature(Signature memory _signature) internal pure returns (bytes memory) {
+        return abi.encodePacked(_signature.signer, _signature.nonce, _signature.expiry);
     }
 }
