@@ -397,7 +397,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
             milestone.status == MilestoneStatus.ACCEPTED || milestone.status == MilestoneStatus.CLAIMED,
             "This milestone has not been paid by client"
         );
-        (uint256 _milestoneIdNext, uint256 _amount) = _depositToMilestone(_projectId, project);
+        (uint256 _milestoneIdNext, uint256 _amount) = _createMilestone(_projectId, project);
 
         emit Deposited(_projectId, _milestoneIdNext, _amount, project.status);
     }
@@ -432,7 +432,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         milestone.status = MilestoneStatus.ACCEPTED;
 
         if (_isDepositNextMilestone && _milestoneId < project.milestoneBudgets.length) {
-            _depositToMilestone(_projectId, project);
+            _createMilestone(_projectId, project);
         }
 
         emit ClientConfirmMilestone(_projectId, _milestoneId, _isDepositNextMilestone);
@@ -561,13 +561,13 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
-     *  @dev    Deposit and create milestone
+     *  @dev    Create milestone
      *
      *          Name                Meaning
      *  @param  _projectId          Id of project
      *  @param  _project            Info of project
      */
-    function _depositToMilestone(
+    function _createMilestone(
         uint256 _projectId,
         Project storage _project
     ) private returns (uint256 _milestoneIdNext, uint256 _amount) {
