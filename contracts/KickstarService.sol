@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 import "./lib/Helper.sol";
+import "./interfaces/IReferral.sol";
 
 contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20Upgradeable for IERC20Upgradeable;
@@ -93,15 +94,20 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     uint256 public constant FEE_DENOMINATOR = 10000;
 
     /**
+     *  @dev this is contract referral
+     */
+    IReferral public referral;
+
+    /**
      *  @dev maxMilestone uint256 is max qty milestone of each project
      */
-    uint256 public maxMilestone = 20;
+    uint256 public maxMilestone;
 
     /**
      *  @dev serviceFee uint256 is service fee of each project
      */
-    uint256 public clientFeePercent = 1500;
-    uint256 public freelancerFeePercent = 500;
+    uint256 public clientFeePercent;
+    uint256 public freelancerFeePercent;
 
     /**
      *  @dev lastProjectId uint256 is the latest requested project ID started by 1
@@ -166,6 +172,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     );
     event SetPermittedToken(address indexed token, bool indexed allowed);
     event SetMaxMilestone(uint256 oldValue, uint256 newValue);
+    event SetReferralContract(address indexed oldValue, address indexed newValue);
 
     modifier notZeroAddress(address _addr) {
         require(_addr != address(0), "Invalid address");
@@ -195,10 +202,15 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     /**
      *  @dev Initialize new contract.
      */
-    function initialize(address _owner) public initializer {
+    function initialize(address _owner, IReferral _referral) public initializer {
         __Pausable_init();
         __Ownable_init();
         __ReentrancyGuard_init();
+
+        referral = _referral;
+        maxMilestone = 10;
+        clientFeePercent = 1500;
+        freelancerFeePercent = 500;
 
         transferOwnership(_owner);
         _pause();
@@ -270,7 +282,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     /**
      * @notice Set max milestone
      *
-     * @dev    Only owner or admin can call this function.
+     * @dev    Only owner can call this function.
      *
      * @param  _maxMilestone   Number of milestone.
      *
@@ -281,6 +293,22 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         uint256 oldValue = maxMilestone;
         maxMilestone = _maxMilestone;
         emit SetMaxMilestone(oldValue, maxMilestone);
+    }
+
+    /**
+     * @notice Set referral contract
+     *
+     * @dev    Only owner can call this function.
+     *
+     * @param  _referral   Contract referral.
+     *
+     * emit {SetReferralContract} events
+     */
+    function setReferralContract(address _referral) external whenNotPaused onlyOwner notZeroAddress(_referral) {
+        require(_referral != address(referral), "Already exist");
+        address oldValue = address(referral);
+        referral = IReferral(_referral);
+        emit SetReferralContract(oldValue, _referral);
     }
 
     /**
@@ -307,8 +335,8 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         PayType _payType
     ) external payable whenNotPaused notZeroAddress(_freelancer) {
         require(_msgSender() != _freelancer, "Freelancer can not be same");
-        require(permittedPaymentTokens[_paymentToken] == true || _paymentToken == address(0), "Invalid project token");
-        require(_budget > 0, "Amount per installment must be greater than 0");
+        require(permittedPaymentTokens[_paymentToken] || _paymentToken == address(0), "Invalid payment token");
+        require(_budget > 0, "Budget must be greater than 0");
         require(_milestoneBudgets.length > 0 && _milestoneBudgets.length <= maxMilestone, "Invalid length");
 
         uint256 currentTime = block.timestamp;
@@ -324,8 +352,16 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         project.createdDate = currentTime;
         project.expiredDate = _expiredDate;
         project.payType = _payType;
-        project.clientFeePercent = clientFeePercent;
-        project.freelancerFeePercent = freelancerFeePercent;
+
+        uint256 _disscountClientFeePercent = referral.getReferrer(_msgSender());
+        uint256 _disscountFreelancerFeePercent = referral.getReferrer(_freelancer);
+
+        project.clientFeePercent = _disscountClientFeePercent < clientFeePercent
+            ? clientFeePercent - _disscountClientFeePercent
+            : 0;
+        project.freelancerFeePercent = _disscountFreelancerFeePercent < freelancerFeePercent
+            ? freelancerFeePercent - _disscountFreelancerFeePercent
+            : 0;
 
         uint256 _totalValue = 0;
 
@@ -548,12 +584,10 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
             if (_mileStoneId > 0 && _mileStoneId <= project.currentMilestone) {
                 return milestones[_projectId][_mileStoneId];
             } else if (_mileStoneId > project.currentMilestone && _mileStoneId <= project.milestoneBudgets.length) {
-                return
-                    Milestone(
-                        _projectId,
-                        project.milestoneBudgets[project.currentMilestone - 1],
-                        MilestoneStatus.CREATED
-                    );
+                if (project.payType == PayType.ALL) {
+                    return Milestone(_projectId, project.milestoneBudgets[_mileStoneId - 1], MilestoneStatus.PAID);
+                }
+                return Milestone(_projectId, project.milestoneBudgets[_mileStoneId - 1], MilestoneStatus.CREATED);
             }
         }
 
