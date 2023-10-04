@@ -403,7 +403,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     /**
-     *  @dev    Client pay for the project
+     *  @dev    If current milestone is ACCEPT or CLAIMED and next milestone has not been paid so client can pay next current milestone of project
      *
      *  @notice Only Client can call this function.
      *
@@ -412,7 +412,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      *
      *  Emit event {Deposited}
      */
-    function deposit(
+    function depositToContinueProject(
         uint256 _projectId
     )
         external
@@ -431,7 +431,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         Milestone storage milestone = milestones[_projectId][_milestoneId];
         require(
             milestone.status == MilestoneStatus.ACCEPTED || milestone.status == MilestoneStatus.CLAIMED,
-            "This milestone has not been paid by client"
+            "Invalid milestone"
         );
         (uint256 _milestoneIdNext, uint256 _amount) = _createMilestone(_projectId, project);
 
