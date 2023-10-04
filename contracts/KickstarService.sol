@@ -117,7 +117,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     /**
      *  @dev Mapping project ID to a project detail
      */
-    mapping(uint256 => Project) public projects;
+    mapping(uint256 => Project) private projects;
 
     /**
      *  @dev Mapping project ID to milestone ID to get info of per milestone
@@ -129,18 +129,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      */
     mapping(address => bool) public permittedPaymentTokens;
 
-    event AcceptBid(
-        uint256 indexed projectId,
-        address freelancer,
-        address client,
-        address paymentToken,
-        uint256 budget,
-        uint256 createdDate,
-        uint256 expiredDate,
-        ProjectStatus milestoneStatus,
-        PayType payType,
-        uint256[] milestoneBudgets
-    );
+    event AcceptBid(uint256 indexed projectId, Project projectInfo);
     event Deposited(
         uint256 indexed projectId,
         uint256 indexed milestoneId,
@@ -185,7 +174,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
     }
 
     modifier onlyClient(uint256 _projectId) {
-        require(_msgSender() == projects[_projectId].client, "Caller is not the Client of this project");
+        require(_msgSender() == projects[_projectId].client, "Caller is not the client of this project");
         _;
     }
 
@@ -388,18 +377,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
         project.amountClientFee += _clientFee;
         _deposit(project.paymentToken, _msgSender(), project.amountPaid + project.amountClientFee);
 
-        emit AcceptBid(
-            lastProjectId,
-            _freelancer,
-            _msgSender(),
-            _paymentToken,
-            _budget,
-            currentTime,
-            _expiredDate,
-            project.status,
-            _payType,
-            _milestoneBudgets
-        );
+        emit AcceptBid(lastProjectId, project);
     }
 
     /**
@@ -543,7 +521,7 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
                 milestone.status = MilestoneStatus.CANCELED;
             }
 
-            project.status == ProjectStatus.STOPPED;
+            project.status = ProjectStatus.STOPPED;
             uint256 _amountRefund = project.amountPaid - project.amountClaimAccepted + project.amountClientFee;
             _withdraw(project.client, project.paymentToken, _amountRefund);
         } else {
@@ -568,6 +546,17 @@ contract KickstarService is PausableUpgradeable, OwnableUpgradeable, ReentrancyG
      */
     function calculateServiceFee(uint256 _amount, uint256 _serviceFeePercent) public pure returns (uint256) {
         return (_amount * _serviceFeePercent) / FEE_DENOMINATOR;
+    }
+
+    /**
+     *  @dev    Get project by project id
+     *
+     *          Name                Meaning
+     *  @param  _projectId          Project id
+     *
+     */
+    function getProjectById(uint256 _projectId) external view returns (Project memory) {
+        return projects[_projectId];
     }
 
     /**
